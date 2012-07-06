@@ -100,6 +100,9 @@ struct cfs_bandwidth {
 #endif
 };
 
+struct oxc_rq;
+struct hyper_oxc_rq;
+
 /* task group related information */
 struct task_group {
 	struct cgroup_subsys_state css;
@@ -120,6 +123,15 @@ struct task_group {
 
 	struct rt_bandwidth rt_bandwidth;
 #endif
+	/* 
+	 * If a task group is associated with a hyper_oxc_rq,
+	 * this field is not NULL
+	 */
+	struct hyper_oxc_rq *hyper_oxc_rq;
+	/*
+	 * an assistant label
+	 */
+	int oxc_label;
 
 	struct rcu_head rcu;
 	struct list_head list;
@@ -309,6 +321,29 @@ struct rt_rq {
 #endif
 };
 
+/*
+ * oxc_edf_tree orders oxc_rq in the same cpu in
+ * a rb-tree according to their dynamic priority:
+ * - i.e. deadline
+ */
+struct oxc_edf_tree {
+	struct rb_root rb_root;
+	struct rb_node *rb_leftmost;
+};
+
+/*
+ * a hyper_oxc_rq contains a set of oxc_rqs
+ */
+struct hyper_oxc_rq {	
+	cpumask_var_t cpus_allowed;
+	struct oxc_rq ** oxc_rq;
+};
+
+
+
+
+
+
 #ifdef CONFIG_SMP
 
 /*
@@ -370,6 +405,10 @@ struct rq {
 
 	struct cfs_rq cfs;
 	struct rt_rq rt;
+	
+	struct oxc_edf_tree oxc_edf_tree;	
+	/* If this label is set, it means this rq is a per container rq */
+	int in_oxc;
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	/* list of leaf cfs_rq on this cpu: */
@@ -465,6 +504,92 @@ struct rq {
 #endif
 };
 
+/*
+ * oxc_rq is a open-extension container.
+ * It reserves bandwidth in a cpu according to CBS rules.
+ */
+struct oxc_rq {
+	/*
+	 * Number of tasks enqueued in an oxc_rq.
+	 */
+	unsigned long oxc_nr_running;
+	/* 
+	 * This field is set when the reservation of an 
+	 * oxc_rq is exhausted. 
+	 */
+	int oxc_throttled;
+	/*
+	 * Current deadline of an oxc_rq.
+	 */
+	u64 oxc_deadline;
+	/*
+	 * The accumulated running time of an oxc_rq since 
+	 * last recharging point, where oxc_time is set to be 0.
+	 */
+	u64 oxc_time;
+	/*
+	 * A pair of paramters for cpu reservation
+	 * oxc_runtime - the maximum budget parameter
+	 * oxc_period - the period parameter 
+	 */
+	u64 oxc_runtime;
+	ktime_t oxc_period;
+	/* This field records the latest active time of an oxc_rq */
+	u64 oxc_start_time;
+	
+	struct hrtimer oxc_period_timer;
+	raw_spinlock_t oxc_runtime_lock;
+	/* 
+	 * It may happen that before timer's activation,
+	 * things need to be done have been finished.
+	 */
+	bool oxc_needs_resync; 
+
+	/* A pointer to the per cpu runqueue */
+	struct rq *rq;
+	/* A local runqueue, that is, the per container runqueue */
+	struct rq rq_;
+	/* 
+	 * An oxc_rq is stored in a edf tree by its deadline( or 
+	 * oxc_highest_prio when two oxc_rq having tie deadlines
+	 */
+	struct rb_node rb_node;
+};
+
+extern struct rt_bandwidth def_oxc_bandwidth;
+extern inline struct task_group *cgroup_tg(struct cgroup *cgrp);
+extern void enqueue_task(struct rq *rq, struct task_struct *p, int flags);
+extern void dequeue_task(struct rq *rq, struct task_struct *p, int flags);
+extern int is_oxc_task(struct task_struct *p);
+extern struct oxc_rq* oxc_rq_of_task(struct task_struct* p);
+extern void 
+init_oxc_bandwidth(struct rt_bandwidth *rt_b, u64 period, u64 runtime);
+extern void init_oxc_edf_tree(struct oxc_edf_tree *tree); 
+extern struct oxc_rq *create_oxc_rq(struct rq *rq);
+extern struct hyper_oxc_rq * create_hyper_oxc_rq(cpumask_var_t cpus_allowed);
+extern int 
+alloc_oxc_sched_group(struct task_group *tg, struct task_group *parent);
+extern void 
+set_oxc_rq_bandwidth(struct oxc_rq *oxc_rq, u64 period, u64 runtime);
+extern void 
+attach_cgroup_to_hyper_oxc_rq(struct hyper_oxc_rq *hyper_oxc_rq, 
+							struct cgroup *cg);
+extern int attach_oxc_rq_to_hyper_oxc_rq(struct hyper_oxc_rq *h_oxc_rq,
+          	                                      struct oxc_rq *oxc_rq);
+extern void put_prev_task(struct rq *rq, struct task_struct *prev);
+extern struct rq *task_rq_lock(struct task_struct *p, unsigned long *flags);
+extern void task_rq_unlock(struct rq *rq, 
+				struct task_struct *p, unsigned long *flags);
+
+
+
+
+
+
+
+
+
+
 static inline int cpu_of(struct rq *rq)
 {
 #ifdef CONFIG_SMP
@@ -479,6 +604,14 @@ DECLARE_PER_CPU(struct rq, runqueues);
 #define cpu_rq(cpu)		(&per_cpu(runqueues, (cpu)))
 #define this_rq()		(&__get_cpu_var(runqueues))
 #define task_rq(p)		cpu_rq(task_cpu(p))
+/* 
+ * Because the import of the local runqueue concept,
+ * new paths from a task to the runqueue it associated are added.
+ */
+#define task_rq_fair_oxc(p)	\
+				container_of(p->se.cfs_rq, struct rq, cfs)
+#define task_rq_rt_oxc(p)	\
+				container_of(p->rt.rt_rq, struct rq, rt)
 #define cpu_curr(cpu)		(cpu_rq(cpu)->curr)
 #define raw_rq()		(&__raw_get_cpu_var(runqueues))
 
@@ -557,18 +690,32 @@ static inline struct task_group *task_group(struct task_struct *p)
 /* Change a task's cfs_rq and parent entity if it moves across CPUs/groups */
 static inline void set_task_rq(struct task_struct *p, unsigned int cpu)
 {
-#if defined(CONFIG_FAIR_GROUP_SCHED) || defined(CONFIG_RT_GROUP_SCHED)
+//#if defined(CONFIG_FAIR_GROUP_SCHED) || defined(CONFIG_RT_GROUP_SCHED)
 	struct task_group *tg = task_group(p);
-#endif
+//#endif
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	p->se.cfs_rq = tg->cfs_rq[cpu];
 	p->se.parent = tg->se[cpu];
+#else
+	/* The new task group is scheduled in plain scheduling */
+	if(!tg->hyper_oxc_rq)
+		p->se.cfs_rq = &cpu_rq(cpu)->cfs;
+	/* The new task group is scheduled in container-level */
+	else
+		p->se.cfs_rq = &tg->hyper_oxc_rq->oxc_rq[cpu]->rq_.cfs;
 #endif
 
 #ifdef CONFIG_RT_GROUP_SCHED
 	p->rt.rt_rq  = tg->rt_rq[cpu];
 	p->rt.parent = tg->rt_se[cpu];
+#else
+	/* The new task group is scheduled in plain scheduling */
+	if(!tg->hyper_oxc_rq)
+		p->rt.rt_rq = &cpu_rq(cpu)->rt;
+	/* The new task group is scheduled in container-level */
+	else
+		p->rt.rt_rq = &tg->hyper_oxc_rq->oxc_rq[cpu]->rq_.rt;
 #endif
 }
 
@@ -847,6 +994,7 @@ extern const struct sched_class stop_sched_class;
 extern const struct sched_class rt_sched_class;
 extern const struct sched_class fair_sched_class;
 extern const struct sched_class idle_sched_class;
+extern const struct sched_class oxc_sched_class;
 
 
 #ifdef CONFIG_SMP

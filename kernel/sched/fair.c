@@ -370,13 +370,16 @@ static inline struct rq *rq_of(struct cfs_rq *cfs_rq)
 
 static inline struct cfs_rq *task_cfs_rq(struct task_struct *p)
 {
-	return &task_rq(p)->cfs;
+	//return &task_rq(p)->cfs;
+	return &(task_rq_fair_oxc(p)->cfs);
 }
 
 static inline struct cfs_rq *cfs_rq_of(struct sched_entity *se)
 {
 	struct task_struct *p = task_of(se);
-	struct rq *rq = task_rq(p);
+	//struct rq *rq = task_rq(p);
+	struct rq *rq = task_rq_fair_oxc(p);
+	/* This is equivalent to return se->cfs_rq; */
 
 	return &rq->cfs;
 }
@@ -2120,7 +2123,8 @@ static void hrtick_start_fair(struct rq *rq, struct task_struct *p)
 	struct sched_entity *se = &p->se;
 	struct cfs_rq *cfs_rq = cfs_rq_of(se);
 
-	WARN_ON(task_rq(p) != rq);
+	//WARN_ON(task_rq(p) != rq);
+	WARN_ON(task_rq_fair_oxc(p) != rq);
 
 	if (cfs_rq->nr_running > 1) {
 		u64 slice = sched_slice(cfs_rq, se);
@@ -5287,10 +5291,10 @@ static void switched_to_fair(struct rq *rq, struct task_struct *p)
 static void set_curr_task_fair(struct rq *rq)
 {
 	struct sched_entity *se = &rq->curr->se;
-
+	BUG_ON(!rq->curr);	
+	BUG_ON(!&rq->curr->se);	
 	for_each_sched_entity(se) {
 		struct cfs_rq *cfs_rq = cfs_rq_of(se);
-
 		set_next_entity(cfs_rq, se);
 		/* ensure bandwidth has been allocated on our new cfs_rq */
 		account_cfs_rq_runtime(cfs_rq, 0);
