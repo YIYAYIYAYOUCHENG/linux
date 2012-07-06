@@ -1221,10 +1221,10 @@ struct sched_entity {
 	struct sched_statistics statistics;
 #endif
 
-#ifdef CONFIG_FAIR_GROUP_SCHED
-	struct sched_entity	*parent;
 	/* rq on which this entity is (to be) queued: */
 	struct cfs_rq		*cfs_rq;
+#ifdef CONFIG_FAIR_GROUP_SCHED
+	struct sched_entity	*parent;
 	/* rq "owned" by this entity/group: */
 	struct cfs_rq		*my_q;
 #endif
@@ -1237,10 +1237,10 @@ struct sched_rt_entity {
 	int nr_cpus_allowed;
 
 	struct sched_rt_entity *back;
-#ifdef CONFIG_RT_GROUP_SCHED
-	struct sched_rt_entity	*parent;
 	/* rq on which this entity is (to be) queued: */
 	struct rt_rq		*rt_rq;
+#ifdef CONFIG_RT_GROUP_SCHED
+	struct sched_rt_entity	*parent;
 	/* rq "owned" by this entity/group: */
 	struct rt_rq		*my_q;
 #endif
