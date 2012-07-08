@@ -1712,6 +1712,8 @@ static int pull_rt_task(struct rq *this_rq)
 	struct task_struct *p;
 	struct rq *src_rq;
 
+	if( this_rq->in_oxc == 1)
+		return 0;
 	if (likely(!rt_overloaded(this_rq)))
 		return 0;
 
