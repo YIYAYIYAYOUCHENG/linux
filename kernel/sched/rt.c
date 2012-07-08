@@ -25,7 +25,6 @@ static enum hrtimer_restart sched_rt_period_timer(struct hrtimer *timer)
 
 		if (!overrun)
 			break;
-
 		idle = do_sched_rt_period_timer(rt_b, overrun);
 	}
 
@@ -758,7 +757,15 @@ int update_runtime(struct notifier_block *nfb, unsigned long action, void *hcpu)
 static int balance_runtime(struct rt_rq *rt_rq)
 {
 	int more = 0;
-
+	struct rq *rq;
+#ifdef CONFIG_RT_GROUP_SCHED
+	rq = rt_rq->rq;
+#else
+	rq = container_of(rt_rq, struct rq, rt);
+#endif
+	if( rq->in_oxc == 1)
+		return 0;
+	
 	if (!sched_feat(RT_RUNTIME_SHARE))
 		return more;
 
@@ -787,7 +794,8 @@ static int do_sched_rt_period_timer(struct rt_bandwidth *rt_b, int overrun)
 		int enqueue = 0;
 		struct rt_rq *rt_rq = sched_rt_period_rt_rq(rt_b, i);
 		struct rq *rq = rq_of_rt_rq(rt_rq);
-
+		if( rq->in_oxc == 1)
+			raw_spin_lock(&cpu_rq(i)->lock);
 		raw_spin_lock(&rq->lock);
 		if (rt_rq->rt_time) {
 			u64 runtime;
@@ -822,6 +830,8 @@ static int do_sched_rt_period_timer(struct rt_bandwidth *rt_b, int overrun)
 		if (enqueue)
 			sched_rt_rq_enqueue(rt_rq);
 		raw_spin_unlock(&rq->lock);
+		if( rq->in_oxc == 1)
+			raw_spin_unlock(&cpu_rq(i)->lock);
 	}
 
 	if (!throttled && (!rt_bandwidth_enabled() || rt_b->rt_runtime == RUNTIME_INF))
@@ -1606,6 +1616,8 @@ static int push_rt_task(struct rq *rq)
 	struct rq *lowest_rq;
 	int ret = 0;
 
+	if( rq->in_oxc == 1)
+		return 0;
 	if (!rq->rt.overloaded)
 		return 0;
 
@@ -1813,7 +1825,7 @@ static void set_cpus_allowed_rt(struct task_struct *p,
 	 * which is running AND changing its weight value.
 	 */
 	if (p->on_rq && (weight != p->rt.nr_cpus_allowed)) {
-		struct rq *rq = task_rq(p);
+		struct rq *rq = task_rq_rt_oxc(p); //task_rq(p);
 
 		if (!task_current(rq, p)) {
 			/*

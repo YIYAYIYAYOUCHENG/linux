@@ -754,7 +754,7 @@ static void task_tick(struct rq *rq, struct task_struct *p, int queued)
 static void switched_from(struct rq *rq, struct task_struct *p,
                                           const struct sched_class *prev_class)
 {
-       if( is_oxc_task(p)) 
+       if( is_oxc_task(p) && !rt_task(p)) 
                prev_class->switched_from(&oxc_rq_of_task(p)->rq_, p);
        else
                prev_class->switched_from(rq, p);
@@ -1473,7 +1473,7 @@ ttwu_do_wakeup(struct rq *rq, struct task_struct *p, int wake_flags)
 	check_preempt_curr(rq, p, wake_flags);
 	p->state = TASK_RUNNING;
 #ifdef CONFIG_SMP
-	if (p->sched_class->task_woken)
+	if (p->sched_class->task_woken && !is_oxc_task(p))
 		p->sched_class->task_woken(rq, p);
 
 	if (rq->idle_stamp) {
@@ -1888,7 +1888,7 @@ void wake_up_new_task(struct task_struct *p)
 	trace_sched_wakeup_new(p, true);
 	check_preempt_curr(rq, p, WF_FORK);
 #ifdef CONFIG_SMP
-	if (p->sched_class->task_woken)
+	if (p->sched_class->task_woken && !is_oxc_task(p))
 		p->sched_class->task_woken(rq, p);
 #endif
 	task_rq_unlock(rq, p, &flags);
@@ -2041,6 +2041,8 @@ static void finish_task_switch(struct rq *rq, struct task_struct *prev)
 /* assumes rq->lock is held */
 static inline void pre_schedule(struct rq *rq, struct task_struct *prev)
 {
+	if( is_oxc_task(prev))
+		return;
 	if (prev->sched_class->pre_schedule)
 		prev->sched_class->pre_schedule(rq, prev);
 }
@@ -2048,6 +2050,9 @@ static inline void pre_schedule(struct rq *rq, struct task_struct *prev)
 /* rq->lock is NOT held, but preemption is disabled */
 static inline void post_schedule(struct rq *rq)
 {
+	if( is_oxc_task(rq->curr))
+		return;
+
 	if (rq->post_schedule) {
 		unsigned long flags;
 
