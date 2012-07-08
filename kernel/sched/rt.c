@@ -212,7 +212,8 @@ static inline struct rq *rq_of_rt_rq(struct rt_rq *rt_rq)
 static inline struct rt_rq *rt_rq_of_se(struct sched_rt_entity *rt_se)
 {
 	struct task_struct *p = rt_task_of(rt_se);
-	struct rq *rq = task_rq(p);
+	//struct rq *rq = task_rq(p);
+	struct rq *rq = task_rq_rt_oxc(p);
 
 	return &rq->rt;
 }
@@ -1913,7 +1914,7 @@ static void switched_to_rt(struct rq *rq, struct task_struct *p)
 #ifdef CONFIG_SMP
 		if (rq->rt.overloaded && push_rt_task(rq) &&
 		    /* Don't resched if we changed runqueues */
-		    rq != task_rq(p))
+		    /*rq != task_rq(p))*/ rq != task_rq_rt_oxc(p))
 			check_resched = 0;
 #endif /* CONFIG_SMP */
 		if (check_resched && p->prio < rq->curr->prio)

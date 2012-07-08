@@ -25,7 +25,6 @@
  *  2007-11-29  RT balancing improvements by Steven Rostedt, Gregory Haskins,
  *              Thomas Gleixner, Mike Kravetz
  */
-
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/nmi.h>
@@ -311,7 +310,7 @@ static inline struct rq *__task_rq_lock(struct task_struct *p)
 /*
  * task_rq_lock - lock p->pi_lock and lock the rq @p resides on.
  */
-static struct rq *task_rq_lock(struct task_struct *p, unsigned long *flags)
+struct rq *task_rq_lock(struct task_struct *p, unsigned long *flags)
 	__acquires(p->pi_lock)
 	__acquires(rq->lock)
 {
@@ -334,7 +333,7 @@ static void __task_rq_unlock(struct rq *rq)
 	raw_spin_unlock(&rq->lock);
 }
 
-static inline void
+inline void
 task_rq_unlock(struct rq *rq, struct task_struct *p, unsigned long *flags)
 	__releases(rq->lock)
 	__releases(p->pi_lock)
@@ -380,6 +379,7 @@ static void hrtick_clear(struct rq *rq)
  * High-resolution timer tick.
  * Runs from hardirq context with interrupts disabled.
  */
+static void task_tick(struct rq *rq, struct task_struct *p, int flags);
 static enum hrtimer_restart hrtick(struct hrtimer *timer)
 {
 	struct rq *rq = container_of(timer, struct rq, hrtick_timer);
@@ -388,7 +388,8 @@ static enum hrtimer_restart hrtick(struct hrtimer *timer)
 
 	raw_spin_lock(&rq->lock);
 	update_rq_clock(rq);
-	rq->curr->sched_class->task_tick(rq, rq->curr, 1);
+	//rq->curr->sched_class->task_tick(rq, rq->curr, 1);
+	task_tick(rq, rq->curr, 1);
 	raw_spin_unlock(&rq->lock);
 
 	return HRTIMER_NORESTART;
@@ -712,19 +713,61 @@ static void set_load_weight(struct task_struct *p)
 	load->inv_weight = prio_to_wmult[prio];
 }
 
-static void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
+void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
 {
 	update_rq_clock(rq);
 	sched_info_queued(p);
-	p->sched_class->enqueue_task(rq, p, flags);
+	//p->sched_class->enqueue_task(rq, p, flags);
+	if( is_oxc_task(p))
+		oxc_sched_class.enqueue_task(rq, p, flags);
+	else
+		p->sched_class->enqueue_task(rq, p, flags);
 }
 
-static void dequeue_task(struct rq *rq, struct task_struct *p, int flags)
+void dequeue_task(struct rq *rq, struct task_struct *p, int flags)
 {
 	update_rq_clock(rq);
 	sched_info_dequeued(p);
-	p->sched_class->dequeue_task(rq, p, flags);
+	//p->sched_class->dequeue_task(rq, p, flags);
+	if( is_oxc_task(p))
+		oxc_sched_class.dequeue_task(rq, p, flags);
+	else
+		p->sched_class->dequeue_task(rq, p, flags);
 }
+
+static void yield_task( struct rq *rq)
+{
+       if(is_oxc_task(rq->curr))
+               oxc_sched_class.yield_task(rq);
+       else
+               rq->curr->sched_class->yield_task(rq);
+}
+
+static void task_tick(struct rq *rq, struct task_struct *p, int queued)
+{
+       if( is_oxc_task(p))
+               oxc_sched_class.task_tick(rq, p, queued);
+       else
+               p->sched_class->task_tick(rq, p, queued);
+}
+
+static void switched_from(struct rq *rq, struct task_struct *p,
+                                          const struct sched_class *prev_class)
+{
+       if( is_oxc_task(p)) 
+               prev_class->switched_from(&oxc_rq_of_task(p)->rq_, p);
+       else
+               prev_class->switched_from(rq, p);
+}
+
+static void switched_to(struct rq *rq, struct task_struct *p)
+{
+       if( is_oxc_task(p))
+               oxc_sched_class.switched_to(rq, p);
+       else
+               p->sched_class->switched_to(rq, p);
+}
+
 
 void activate_task(struct rq *rq, struct task_struct *p, int flags)
 {
@@ -1044,21 +1087,33 @@ inline int task_curr(const struct task_struct *p)
 	return cpu_curr(task_cpu(p)) == p;
 }
 
+static void prio_changed(struct rq *rq, struct task_struct *p, int old_prio);
 static inline void check_class_changed(struct rq *rq, struct task_struct *p,
 				       const struct sched_class *prev_class,
 				       int oldprio)
 {
 	if (prev_class != p->sched_class) {
 		if (prev_class->switched_from)
-			prev_class->switched_from(rq, p);
-		p->sched_class->switched_to(rq, p);
+			//prev_class->switched_from(rq, p);
+			switched_from(rq, p, prev_class);
+		//p->sched_class->switched_to(rq, p);
+		switched_to(rq, p);
 	} else if (oldprio != p->prio)
-		p->sched_class->prio_changed(rq, p, oldprio);
+		//p->sched_class->prio_changed(rq, p, oldprio);
+		prio_changed(rq, p, oldprio);
 }
 
 void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)
 {
 	const struct sched_class *class;
+	
+       if( is_oxc_task(p)) {
+               oxc_sched_class.check_preempt_curr(rq, p, flags);
+               return;
+       }
+
+       if( is_oxc_task(rq->curr) && !is_oxc_task(p))
+               return; 
 
 	if (p->sched_class == rq->curr->sched_class) {
 		rq->curr->sched_class->check_preempt_curr(rq, p, flags);
@@ -1329,7 +1384,10 @@ out:
 static inline
 int select_task_rq(struct task_struct *p, int sd_flags, int wake_flags)
 {
-	int cpu = p->sched_class->select_task_rq(p, sd_flags, wake_flags);
+	int cpu;//  = p->sched_class->select_task_rq(p, sd_flags, wake_flags);
+	if( is_oxc_task(p))
+		return smp_processor_id();
+	cpu = p->sched_class->select_task_rq(p, sd_flags, wake_flags);
 
 	/*
 	 * In order not to call set_task_cpu() on a blocking task we need
@@ -1413,7 +1471,6 @@ ttwu_do_wakeup(struct rq *rq, struct task_struct *p, int wake_flags)
 {
 	trace_sched_wakeup(p, true);
 	check_preempt_curr(rq, p, wake_flags);
-
 	p->state = TASK_RUNNING;
 #ifdef CONFIG_SMP
 	if (p->sched_class->task_woken)
@@ -2546,7 +2603,8 @@ void sched_exec(void)
 	int dest_cpu;
 
 	raw_spin_lock_irqsave(&p->pi_lock, flags);
-	dest_cpu = p->sched_class->select_task_rq(p, SD_BALANCE_EXEC, 0);
+	//dest_cpu = p->sched_class->select_task_rq(p, SD_BALANCE_EXEC, 0);
+	dest_cpu = select_task_rq(p, SD_BALANCE_EXEC, 0);
 	if (dest_cpu == smp_processor_id())
 		goto unlock;
 
@@ -3027,7 +3085,8 @@ void scheduler_tick(void)
 	raw_spin_lock(&rq->lock);
 	update_rq_clock(rq);
 	update_cpu_load_active(rq);
-	curr->sched_class->task_tick(rq, curr, 0);
+	//curr->sched_class->task_tick(rq, curr, 0);
+	task_tick(rq, curr, 0);
 	raw_spin_unlock(&rq->lock);
 
 	perf_event_task_tick();
@@ -3134,11 +3193,33 @@ static inline void schedule_debug(struct task_struct *prev)
 	schedstat_inc(this_rq(), sched_count);
 }
 
-static void put_prev_task(struct rq *rq, struct task_struct *prev)
+void put_prev_task(struct rq *rq, struct task_struct *prev)
 {
 	if (prev->on_rq || rq->skip_clock_update < 0)
 		update_rq_clock(rq);
-	prev->sched_class->put_prev_task(rq, prev);
+
+	if( is_oxc_task(prev))
+		oxc_sched_class.put_prev_task(rq, prev);
+	else
+		prev->sched_class->put_prev_task(rq, prev);
+}
+
+static void set_curr_task_(struct rq *rq, struct task_struct *p)
+{
+       if( is_oxc_task(p)) {
+               //printk("set_curr_task: pid=%d\n", p->pid);
+               oxc_sched_class.set_curr_task(rq);
+       }
+       else
+               p->sched_class->set_curr_task(rq);
+}
+
+static void prio_changed(struct rq *rq, struct task_struct *p, int old_prio)
+{
+       if( is_oxc_task(p))
+               oxc_sched_class.prio_changed(rq, p, old_prio);
+       else
+               p->sched_class->prio_changed(rq, p, old_prio);
 }
 
 /*
@@ -3149,6 +3230,11 @@ pick_next_task(struct rq *rq)
 {
 	const struct sched_class *class;
 	struct task_struct *p;
+
+        p = oxc_sched_class.pick_next_task(rq);
+        if( p) {
+                return p;
+        }
 
 	/*
 	 * Optimization: we know that if all tasks are in
@@ -3831,7 +3917,8 @@ void rt_mutex_setprio(struct task_struct *p, int prio)
 	if (on_rq)
 		dequeue_task(rq, p, 0);
 	if (running)
-		p->sched_class->put_prev_task(rq, p);
+		//p->sched_class->put_prev_task(rq, p);
+		put_prev_task(rq, p);
 
 	if (rt_prio(prio))
 		p->sched_class = &rt_sched_class;
@@ -3841,7 +3928,8 @@ void rt_mutex_setprio(struct task_struct *p, int prio)
 	p->prio = prio;
 
 	if (running)
-		p->sched_class->set_curr_task(rq);
+		//p->sched_class->set_curr_task(rq);
+		set_curr_task_(rq, p);
 	if (on_rq)
 		enqueue_task(rq, p, oldprio < prio ? ENQUEUE_HEAD : 0);
 
@@ -4185,7 +4273,8 @@ recheck:
 	if (on_rq)
 		dequeue_task(rq, p, 0);
 	if (running)
-		p->sched_class->put_prev_task(rq, p);
+		//p->sched_class->put_prev_task(rq, p);
+		put_prev_task(rq, p);
 
 	p->sched_reset_on_fork = reset_on_fork;
 
@@ -4194,7 +4283,8 @@ recheck:
 	__setscheduler(rq, p, policy, param->sched_priority);
 
 	if (running)
-		p->sched_class->set_curr_task(rq);
+		//p->sched_class->set_curr_task(rq);
+		set_curr_task_(rq, p);
 	if (on_rq)
 		enqueue_task(rq, p, 0);
 
@@ -4520,7 +4610,8 @@ SYSCALL_DEFINE0(sched_yield)
 	struct rq *rq = this_rq_lock();
 
 	schedstat_inc(rq, yld_count);
-	current->sched_class->yield_task(rq);
+	//current->sched_class->yield_task(rq);
+	yield_task(rq);
 
 	/*
 	 * Since we are going to call schedule() anyway, there's
@@ -5174,7 +5265,8 @@ static void migrate_tasks(unsigned int dead_cpu)
 
 		next = pick_next_task(rq);
 		BUG_ON(!next);
-		next->sched_class->put_prev_task(rq, next);
+		//next->sched_class->put_prev_task(rq, next);
+		put_prev_task(rq, next);
 
 		/* Find suitable destination for @next, with force if needed. */
 		dest_cpu = select_fallback_rq(dead_cpu, next);
@@ -6922,6 +7014,8 @@ void __init sched_init(void)
 
 	init_rt_bandwidth(&def_rt_bandwidth,
 			global_rt_period(), global_rt_runtime());
+	init_oxc_bandwidth(&def_oxc_bandwidth,
+			global_rt_period(), global_rt_runtime());
 
 #ifdef CONFIG_RT_GROUP_SCHED
 	init_rt_bandwidth(&root_task_group.rt_bandwidth,
@@ -6952,6 +7046,7 @@ void __init sched_init(void)
 		rq->calc_load_update = jiffies + LOAD_FREQ;
 		init_cfs_rq(&rq->cfs);
 		init_rt_rq(&rq->rt, rq);
+		init_oxc_edf_tree(&rq->oxc_edf_tree);
 #ifdef CONFIG_FAIR_GROUP_SCHED
 		root_task_group.shares = ROOT_TASK_GROUP_LOAD;
 		INIT_LIST_HEAD(&rq->leaf_cfs_rq_list);
@@ -7230,6 +7325,9 @@ struct task_group *sched_create_group(struct task_group *parent)
 	if (!alloc_rt_sched_group(tg, parent))
 		goto err;
 
+	if (!alloc_oxc_sched_group(tg, parent))
+		goto err;
+
 	spin_lock_irqsave(&task_group_lock, flags);
 	list_add_rcu(&tg->list, &task_groups);
 
@@ -7292,7 +7390,8 @@ void sched_move_task(struct task_struct *tsk)
 	if (on_rq)
 		dequeue_task(rq, tsk, 0);
 	if (unlikely(running))
-		tsk->sched_class->put_prev_task(rq, tsk);
+		//tsk->sched_class->put_prev_task(rq, tsk);
+		put_prev_task(rq, tsk);
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	if (tsk->sched_class->task_move_group)
@@ -7302,7 +7401,8 @@ void sched_move_task(struct task_struct *tsk)
 		set_task_rq(tsk, task_cpu(tsk));
 
 	if (unlikely(running))
-		tsk->sched_class->set_curr_task(rq);
+		//tsk->sched_class->set_curr_task(rq);
+		set_curr_task_(rq, tsk);
 	if (on_rq)
 		enqueue_task(rq, tsk, 0);
 
@@ -7344,6 +7444,84 @@ struct rt_schedulable_data {
 	u64 rt_period;
 	u64 rt_runtime;
 };
+
+
+static int tg_rt_schedulable_oxc(struct task_group *tg, void *data)
+{
+        struct rt_schedulable_data *d = data;
+        struct task_group *child;
+        unsigned long total, sum = 0;
+        int i;
+        struct hyper_oxc_rq *hyper_oxc_rq = d->tg->hyper_oxc_rq;
+        unsigned long reserved_bw = 0;
+        u64 period, runtime;
+
+        if( tg->hyper_oxc_rq != hyper_oxc_rq)
+                return 0;
+
+        period = ktime_to_ns(tg->rt_bandwidth.rt_period);
+        runtime = tg->rt_bandwidth.rt_runtime;
+
+        if (tg == d->tg) {
+                period = d->rt_period;
+                runtime = d->rt_runtime;
+        }
+
+        /*
+         * Cannot have more runtime than the period.
+         */
+        if (runtime > period && runtime != RUNTIME_INF)
+                return -EINVAL;
+
+        /*
+         * Ensure we don't starve existing RT tasks.
+         */
+        if (rt_bandwidth_enabled() && !runtime && tg_has_rt_tasks(tg))
+                return -EBUSY;
+
+        total = to_ratio(period, runtime);
+
+        /*
+         * Nobody can have more than the global setting allows.
+         */
+        if (total > to_ratio(global_rt_period(), global_rt_runtime()))
+                return -EINVAL;
+
+        /*
+         * The sum of our children's runtime should not exceed our own.
+         */
+	 list_for_each_entry_rcu(child, &tg->children, siblings) {
+                if( child->hyper_oxc_rq == hyper_oxc_rq) {
+                        period = ktime_to_ns(child->rt_bandwidth.rt_period);
+                        runtime = child->rt_bandwidth.rt_runtime;
+
+                        if (child == d->tg) {
+                                period = d->rt_period;
+                                runtime = d->rt_runtime;
+                        }
+
+                        sum += to_ratio(period, runtime);
+                }
+        }
+
+        if (sum > total)
+                return -EINVAL;
+
+        if(hyper_oxc_rq == NULL || d->tg != tg)
+                return 0;
+
+        for_each_cpu(i, hyper_oxc_rq->cpus_allowed) {
+                reserved_bw =
+                        to_ratio( 
+			     ktime_to_ns(hyper_oxc_rq->oxc_rq[i]->oxc_period),
+                                        hyper_oxc_rq->oxc_rq[i]->oxc_runtime);
+                if ( total > reserved_bw)
+                        return -EINVAL;
+        }
+
+        return 0;
+}
+
 
 static int tg_rt_schedulable(struct task_group *tg, void *data)
 {
@@ -7401,6 +7579,24 @@ static int tg_rt_schedulable(struct task_group *tg, void *data)
 	return 0;
 }
 
+static int __rt_schedulable_oxc(struct task_group *tg,
+                                        u64 period, u64 runtime)
+{
+        int ret;
+
+        struct rt_schedulable_data data = {
+                .tg = tg,
+                .rt_period = period,
+                .rt_runtime = runtime,
+        };
+
+        rcu_read_lock();
+        ret = walk_tg_tree(tg_rt_schedulable_oxc, tg_nop, &data);
+        rcu_read_unlock();
+
+        return ret;
+}
+
 static int __rt_schedulable(struct task_group *tg, u64 period, u64 runtime)
 {
 	int ret;
@@ -7425,7 +7621,7 @@ static int tg_set_rt_bandwidth(struct task_group *tg,
 
 	mutex_lock(&rt_constraints_mutex);
 	read_lock(&tasklist_lock);
-	err = __rt_schedulable(tg, rt_period, rt_runtime);
+	err = __rt_schedulable_oxc(tg, rt_period, rt_runtime);
 	if (err)
 		goto unlock;
 
@@ -7592,7 +7788,7 @@ int sched_rt_handler(struct ctl_table *table, int write,
 #ifdef CONFIG_CGROUP_SCHED
 
 /* return corresponding task_group object of a cgroup */
-static inline struct task_group *cgroup_tg(struct cgroup *cgrp)
+inline struct task_group *cgroup_tg(struct cgroup *cgrp)
 {
 	return container_of(cgroup_subsys_state(cgrp, cpu_cgroup_subsys_id),
 			    struct task_group, css);
@@ -7934,7 +8130,222 @@ static u64 cpu_rt_period_read_uint(struct cgroup *cgrp, struct cftype *cft)
 }
 #endif /* CONFIG_RT_GROUP_SCHED */
 
+struct vir_cpus {
+        struct mutex    cir_cpus_lock;
+        cpumask_var_t   cpus_allowed;
+        struct rt_bandwidth     rt_bw[NR_CPUS];
+};
+
+static int vir_cpus_parse(const char *buf, struct vir_cpus *vir_cpus)
+{
+       const char *tmp = buf;
+       int cpu_id;
+       char *end;
+
+       while( *tmp != 0) {
+               while(isspace(*tmp))
+                       tmp ++;
+               if(*tmp==0)
+                       goto out_vir_cpus_parse;
+               cpu_id = simple_strtoull(tmp, &end, 0);
+		if( cpu_id > nr_cpu_ids) {
+			WARN_ON(1);
+                       goto err_vir_cpus_parse;
+		}
+               cpumask_set_cpu(cpu_id, vir_cpus->cpus_allowed);
+               tmp += end - tmp;
+               /*
+                * Now it is turn to get the runtime parameter.
+                */
+               while(isspace(*tmp))
+                       tmp ++;
+               if(*tmp==0)
+                       goto err_vir_cpus_parse;
+               vir_cpus->rt_bw[cpu_id].rt_runtime =
+                                       simple_strtoull(tmp, &end, 0) *
+                                                       NSEC_PER_USEC;
+               tmp += end - tmp;
+               /*
+                * The format is runtime/period,
+                * so this time the symbol '/' is checked.
+                */
+               while(isspace(*tmp))
+                       tmp ++;
+               if(*tmp==0)
+                       goto err_vir_cpus_parse;
+               //WARN_ON(*tmp != '/');
+		if(*tmp != '/') {
+			WARN_ON(1);
+			goto err_vir_cpus_parse;
+		}
+               tmp ++;
+               /*
+                * Now let's see the period.
+                */
+               while(isspace(*tmp))
+                       tmp ++;
+               if(*tmp==0)
+                       goto err_vir_cpus_parse;
+               vir_cpus->rt_bw[cpu_id].rt_period = ns_to_ktime
+                                               (simple_strtoull(tmp, &end, 0)
+                                                       * NSEC_PER_USEC);
+               tmp += end - tmp;
+       }
+out_vir_cpus_parse:
+       return 0;
+err_vir_cpus_parse:
+       return -EINVAL;
+}
+
+#ifdef CONFIG_RT_GROUP_SCHED
+static int check_oxc_write_rt(struct task_group *tg, struct vir_cpus *vir_cpus)
+{
+        int i;
+        unsigned long rt_bw;
+
+        if( tg->rt_bandwidth.rt_runtime == RUNTIME_INF)
+                return 0;
+
+        rt_bw = to_ratio( ktime_to_ns(tg->rt_bandwidth.rt_period),
+                                                tg->rt_bandwidth.rt_runtime);
+
+        for_each_cpu(i, vir_cpus->cpus_allowed) {
+                if( rt_bw > to_ratio( ktime_to_ns(vir_cpus->rt_bw[i].rt_period),
+                                        vir_cpus->rt_bw[i].rt_runtime) )
+                        return -EINVAL;
+        }
+
+        return 0;
+}
+#endif
+
+static int oxc_write(struct cgroup *cg, struct cftype *cft, const char *buf)
+{
+        int i;
+        struct vir_cpus vir_cpus;
+        struct task_group *tg = cgroup_tg(cg);
+        u64 period, runtime;
+        int retval;
+        struct hyper_oxc_rq *hyper_oxc_rq;
+        struct oxc_rq *oxc_rq;
+
+        if( !alloc_cpumask_var(&vir_cpus.cpus_allowed, GFP_KERNEL))
+                return -1;
+
+        cpumask_clear(vir_cpus.cpus_allowed);
+
+        retval = vir_cpus_parse(buf, &vir_cpus);
+
+        if( retval != 0)
+                return retval;
+
+#ifdef CONFIG_RT_GROUP_SCHED
+        retval = check_oxc_write_rt(tg, &vir_cpus);
+        if (retval != 0)
+                return retval;
+#endif
+
+        if(!tg->hyper_oxc_rq || tg->oxc_label == 100) {
+
+                hyper_oxc_rq = create_hyper_oxc_rq(vir_cpus.cpus_allowed);
+                for_each_cpu(i, vir_cpus.cpus_allowed) {
+                        period = ktime_to_ns(vir_cpus.rt_bw[i].rt_period);
+                        runtime = vir_cpus.rt_bw[i].rt_runtime;
+
+                        set_oxc_rq_bandwidth(hyper_oxc_rq->oxc_rq[i],
+                                                        period, runtime);
+                }
+
+                attach_cgroup_to_hyper_oxc_rq(hyper_oxc_rq, cg);
+		//BUG_ON(1);
+                return 0;
+        }
+
+        for_each_cpu(i, vir_cpus.cpus_allowed) {
+               // if( cpumask_test_cpu(i, vir_cpus.cpus_allowed)) {
+                        period = ktime_to_ns(vir_cpus.rt_bw[i].rt_period);
+                        runtime = vir_cpus.rt_bw[i].rt_runtime;
+
+                        set_oxc_rq_bandwidth(tg->hyper_oxc_rq->oxc_rq[i],
+                                                        period, runtime);
+#if 0
+                  }
+                  else {
+                          oxc_rq = create_oxc_rq(cpu_rq(i));
+                   	  attach_oxc_rq_to_hyper_oxc_rq(tg->hyper_oxc_rq, oxc_rq);
+                    	  tg->hyper_oxc_rq->oxc_rq[i] = oxc_rq;
+                }
+#endif
+        }
+        return 0;
+}
+
+static size_t oxc_sprintf_vir_cpus(char *s, struct task_group *tg, ssize_t len)
+{
+        size_t count = 0, retval = 0;
+        int i;
+        u64 period, runtime;
+
+        for_each_cpu(i, tg->hyper_oxc_rq->cpus_allowed) {
+                if(cpumask_test_cpu(i, tg->hyper_oxc_rq->cpus_allowed)) {
+                        period =
+                                ktime_to_ns(
+				      tg->hyper_oxc_rq->oxc_rq[i]->oxc_period);
+                        runtime = tg->hyper_oxc_rq->oxc_rq[i]->oxc_runtime;
+
+                        do_div(period, NSEC_PER_USEC);
+                        do_div(runtime, NSEC_PER_USEC);
+
+                        count = snprintf(s, len - count, "%d %llu/%llu ",
+                                                        i, runtime, period);
+
+                        s += count;
+                        retval += count;
+                }
+        }
+
+        return retval;
+}
+
+static ssize_t oxc_read(struct cgroup *cg,
+                        struct cftype *cft,
+                        struct file *file,
+                        char __user *buf,
+                        size_t nbytes, loff_t *ppos)
+{
+        struct task_group *tg = cgroup_tg(cg);
+        ssize_t len = 2 * PAGE_SIZE;
+        char *page;
+        char *s;
+        ssize_t retval = 0;
+
+        if( tg->oxc_label == 100)
+                return -1;
+        if( !tg->hyper_oxc_rq)
+                return 0;
+
+        page = kzalloc(len, GFP_KERNEL);
+        if( !page)
+                return -ENOMEM;
+
+        s = page;
+
+        s += oxc_sprintf_vir_cpus(s, tg, len);
+
+        *s++ = '\n';
+        retval = simple_read_from_buffer(buf, nbytes, ppos, page, s - page);
+
+        kfree(page);
+        return retval;
+}
+
 static struct cftype cpu_files[] = {
+	{
+                .name = "oxc_control",
+                .read = oxc_read,
+                .write_string = oxc_write,
+                .max_write_len = (100U + 6 * NR_CPUS),
+        },
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	{
 		.name = "shares",
