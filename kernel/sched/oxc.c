@@ -321,6 +321,7 @@ static int sched_oxc_rq_runtime_exceeded(struct oxc_rq *oxc_rq)
 	 */
 	else {
 		oxc_rq->oxc_throttled = 1;
+		printk_sched("oxc_time=%llu, oxc_runtime=%llu\n", oxc_rq->oxc_time, oxc_rq->oxc_runtime);
 		oxc_rq->oxc_time = 0;
 		sched_oxc_rq_dequeue(oxc_rq);
 		start_oxc_period_timer(oxc_rq);
@@ -455,9 +456,15 @@ static bool oxc_rq_recharge(struct oxc_rq *oxc_rq, int overrun)
 	
 	oxc_rq->oxc_time = 0;
 	oxc_rq->oxc_deadline += period*overrun; 
-
+	
 	oxc_rq->oxc_throttled = 0;
-	sched_oxc_rq_enqueue(oxc_rq);
+	/* 
+	 * If the maximum budget is not 0, 
+	 * we put the cotainer back.
+	 */ 
+	if( oxc_rq->oxc_runtime != 0) {
+		sched_oxc_rq_enqueue(oxc_rq);
+	}
 		
 	if( oxc_rq->oxc_nr_running)
 		idle = false;
