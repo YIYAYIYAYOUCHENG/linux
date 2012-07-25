@@ -8153,7 +8153,7 @@ static int vir_cpus_parse(const char *buf, struct vir_cpus *vir_cpus)
                if(*tmp==0)
                        goto out_vir_cpus_parse;
                cpu_id = simple_strtoull(tmp, &end, 0);
-		if( cpu_id > nr_cpu_ids) {
+		if( cpu_id >= nr_cpu_ids) {
 			WARN_ON(1);
                        goto err_vir_cpus_parse;
 		}

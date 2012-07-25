@@ -151,7 +151,7 @@ update:
 		oxc_rq->oxc_deadline = rq->clock + period;
 		oxc_rq->oxc_time = 0; 
 
-	}	
+	}
 
 	raw_spin_unlock(&oxc_rq->oxc_runtime_lock);
 }
@@ -254,7 +254,7 @@ static void dequeue_oxc_rq(struct oxc_rq *oxc_rq)
 	 * If an oxc_rq is not in the edf tree, it should be throttled or 
 	 * have no tasks enqueued.
 	 */
-	BUG_ON(!on_rq && !oxc_rq_throttled(oxc_rq) && !oxc_rq->oxc_nr_running);
+	//BUG_ON(!on_rq && !oxc_rq_throttled(oxc_rq) && !oxc_rq->oxc_nr_running);
 
 	if( on_rq && !oxc_rq->oxc_nr_running) {
 		/* Dequeue the oxc_rq if it has no more tasks. */
@@ -321,8 +321,9 @@ static int sched_oxc_rq_runtime_exceeded(struct oxc_rq *oxc_rq)
 	 */
 	else {
 		oxc_rq->oxc_throttled = 1;
+		//update_curr_oxc_rq(oxc_rq->rq);
 		printk_sched("oxc_time=%llu, oxc_runtime=%llu\n", oxc_rq->oxc_time, oxc_rq->oxc_runtime);
-		oxc_rq->oxc_time = 0;
+		//oxc_rq->oxc_time = 0;
 		sched_oxc_rq_dequeue(oxc_rq);
 		start_oxc_period_timer(oxc_rq);
 
@@ -451,22 +452,24 @@ pick_next_oxc_rq(struct rq *rq)
 static bool oxc_rq_recharge(struct oxc_rq *oxc_rq, int overrun)
 {
 	u64 period = sched_oxc_rq_period(oxc_rq);
+	u64 runtime = sched_oxc_rq_runtime(oxc_rq);
 	/* If idle is true, there is no need to restart the timer. */
 	bool idle = true;
 	
-	oxc_rq->oxc_time = 0;
+//	oxc_rq->oxc_time = 0;
+	oxc_rq->oxc_time -= min(oxc_rq->oxc_time, overrun * runtime);
 	oxc_rq->oxc_deadline += period*overrun; 
-	
-	oxc_rq->oxc_throttled = 0;
-	/* 
-	 * If the maximum budget is not 0, 
-	 * we put the cotainer back.
-	 */ 
-	if( oxc_rq->oxc_runtime != 0) {
-		sched_oxc_rq_enqueue(oxc_rq);
+	if( oxc_rq->oxc_time < runtime) {
+		oxc_rq->oxc_throttled = 0;
+		/* 
+		 * If the maximum budget is not 0, 
+		 * we put the cotainer back.
+		 */ 
+		if( oxc_rq->oxc_runtime != 0) {
+			sched_oxc_rq_enqueue(oxc_rq);
+		}
 	}
-		
-	if( oxc_rq->oxc_nr_running)
+	if( oxc_rq->oxc_nr_running || oxc_rq->oxc_throttled)
 		idle = false;
 	
 	return idle;
@@ -564,7 +567,7 @@ static void enqueue_task_oxc(struct rq *rq, struct task_struct *p, int flags)
 	//raw_spin_lock(&oxc_rq->oxc_runtime_lock);
 	inc_oxc_tasks(p, oxc_rq);
 	enqueue_oxc_rq(oxc_rq);
-	inc_nr_running(rq);
+//	inc_nr_running(rq);
 //	raw_spin_unlock(&oxc_rq->oxc_runtime_lock);
 		
 }
@@ -589,7 +592,7 @@ static void dequeue_task_oxc(struct rq *rq, struct task_struct *p, int flags)
 //	raw_spin_lock(&oxc_rq->oxc_runtime_lock);
 	dec_oxc_tasks(p, oxc_rq);
 	dequeue_oxc_rq(oxc_rq);
-	dec_nr_running(rq);
+//	dec_nr_running(rq);
 //	raw_spin_unlock(&oxc_rq->oxc_runtime_lock);
 
 	//raw_spin_unlock(&rq_->lock);
@@ -629,8 +632,11 @@ static struct task_struct* pick_next_task_oxc(struct rq *rq)
 	const struct sched_class *class;
 
 	update_rq_clock(rq);
+	update_curr_oxc_rq(rq);
 	oxc_rq = pick_next_oxc_rq(rq);
 	if( !oxc_rq)
+		return NULL;
+	if( oxc_rq->oxc_throttled)
 		return NULL;
 
 	BUG_ON(!oxc_rq->oxc_nr_running);
